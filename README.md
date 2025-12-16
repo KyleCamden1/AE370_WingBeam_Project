@@ -28,6 +28,8 @@ scripts in the `src/` directory with the parameter values
 described in the report.
 
 python src/beam_solver.py
+
 python src/mode_analysis.py
+
 python src/convergence_tests.py
 
