@@ -26,3 +26,8 @@ modeled as an Euler–Bernoulli beam.
 All figures in the report can be reproduced by running the
 scripts in the `src/` directory with the parameter values
 described in the report.
+
+python src/beam_solver.py
+python src/mode_analysis.py
+python src/convergence_tests.py
+
