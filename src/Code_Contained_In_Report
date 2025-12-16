@@ -1,0 +1,372 @@
+# %%
+import numpy as np
+
+def phi_clamped_free_mode(x, L, beta):
+    xi = x / L
+    s = (np.cosh(beta) + np.cos(beta)) / (np.sinh(beta) + np.sin(beta))
+    return (np.cosh(beta*xi) - np.cos(beta*xi) - s*(np.sinh(beta*xi) - np.sin(beta*xi)))
+
+def omega_from_beta(beta, EI, rhoA, L):
+    return (beta**2) * np.sqrt(EI/(rhoA*L**4))
+
+def D4_apply(u, dx):
+    N = len(u) - 1
+    out = np.zeros_like(u)
+
+    # clamp at root
+    u0 = 0.0
+    u_m1 = u[1]  # u_{-1} = u1 (zero slope at root)
+
+    # free tip ghosts from u''(L)=0 and u'''(L)=0
+    u_p1 = 2*u[N] - u[N-1]
+    u_p2 = 4*u[N] - 4*u[N-1] + u[N-2]
+
+    def U(j):
+        if j == 0:   return u0
+        if j == -1:  return u_m1
+        if j == N+1: return u_p1
+        if j == N+2: return u_p2
+        return u[j]
+
+    for j in range(1, N+1):
+        out[j] = (U(j-2) - 4*U(j-1) + 6*U(j) - 4*U(j+1) + U(j+2)) / dx**4
+
+    out[0] = 0.0
+    return out
+
+def rhs(y, c2, dx):
+    n = len(y)//2
+    u = y[:n].copy()
+    v = y[n:].copy()
+
+    u[0] = 0.0
+    du = v
+    dv = -c2 * D4_apply(u, dx)
+
+    du[0] = 0.0
+    dv[0] = 0.0
+    return np.concatenate([du, dv])
+
+def rk4_step(y, dt, c2, dx):
+    k1 = rhs(y, c2, dx)
+    k2 = rhs(y + 0.5*dt*k1, c2, dx)
+    k3 = rhs(y + 0.5*dt*k2, c2, dx)
+    k4 = rhs(y + dt*k3, c2, dx)
+    return y + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4)
+
+def simulate_beam(L=1.0, EI=1.0, rhoA=1.0, N=200, dt=1e-4, T=1.0,
+                  u0_func=None, v0_func=None, store_every=1):
+    dx = L / N
+    x = np.linspace(0.0, L, N+1)
+    c2 = EI / rhoA
+
+    u0 = np.zeros_like(x) if u0_func is None else u0_func(x)
+    v0 = np.zeros_like(x) if v0_func is None else v0_func(x)
+
+    u0[0] = 0.0
+    v0[0] = 0.0
+
+    y = np.concatenate([u0, v0])
+
+    steps = int(np.round(T/dt))
+    ts, us = [], []
+
+    for n in range(steps+1):
+        if n % store_every == 0:
+            ts.append(n*dt)
+            us.append(y[:N+1].copy())
+        y = rk4_step(y, dt, c2, dx)
+        y[0] = 0.0
+
+    return x, np.array(ts), np.array(us)
+
+
+# %%
+import numpy as np
+import matplotlib.pyplot as plt
+
+L, EI, rhoA = 1.0, 1.0, 1.0
+betas = [1.875104068711, 4.694091132974, 7.854757438237]
+
+def phi_mode(x, beta):
+    xi = x / L
+    s = (np.cosh(beta) + np.cos(beta)) / (np.sinh(beta) + np.sin(beta))
+    return (np.cosh(beta*xi) - np.cos(beta*xi) - s*(np.sinh(beta*xi) - np.sin(beta*xi)))
+
+def omega(beta):
+    return (beta**2) * np.sqrt(EI/(rhoA*L**4))
+
+# -------------------------------------------------
+# 1) Mode shapes (3 modes on one plot)
+# -------------------------------------------------
+x = np.linspace(0, L, 400)
+
+plt.figure(figsize=(8,6))
+for i, b in enumerate(betas, start=1):
+    phi = phi_mode(x, b)
+    phi = phi / phi[-1]   # normalize tip = 1
+    plt.plot(x, phi, label=f"Mode {i}")
+
+plt.xlabel("x")
+plt.ylabel(r"$\Phi_n(x)$  (tip-normalized)")
+plt.title("Clamped–Free Euler–Bernoulli Mode Shapes")
+plt.legend()
+plt.tight_layout()
+plt.savefig("mode_shapes.png", dpi=200)
+plt.show()
+
+# -------------------------------------------------
+# 2) Tip displacement (clean sinusoids, per mode)
+# -------------------------------------------------
+plt.figure(figsize=(8,6))
+
+for i, b in enumerate(betas, start=1):
+    w = omega(b)
+    Tmode = 2*np.pi / w
+    t = np.linspace(0, 5*Tmode, 1000)
+    tip = 0.01*np.cos(w*t)
+    plt.plot(t, tip, label=f"Mode {i}")
+
+plt.xlabel("t (s)")
+plt.ylabel("u(L,t)")
+plt.title("Tip Displacement – Individual Mode Excitation")
+plt.legend()
+plt.tight_layout()
+plt.savefig("tip_displacement_clean.png", dpi=200)
+plt.show()
+
+# -------------------------------------------------
+# 3) FFTs for modes 1–3 (verification)
+# -------------------------------------------------
+plt.figure(figsize=(8,6))
+
+t = np.linspace(0, 10, 4000)
+dt = t[1] - t[0]
+
+for i, b in enumerate(betas, start=1):
+    w = omega(b)
+    f = w / (2*np.pi)
+    tip = 0.01*np.cos(w*t)
+
+    freqs = np.fft.rfftfreq(len(t), d=dt)
+    spec  = np.abs(np.fft.rfft(tip - np.mean(tip)))
+
+    plt.plot(freqs, spec, label=f"Mode {i}, $f_{i}$ = {f:.2f} Hz")
+    plt.axvline(f, linestyle="--")
+
+plt.xlim(0, 12)
+plt.xlabel("Frequency (Hz)")
+plt.ylabel("|FFT|")
+plt.title("Tip Displacement Spectrum (Single-Mode Excitation)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("tip_fft_all_modes.png", dpi=200)
+plt.show()
+
+print("Saved: mode_shapes.png, tip_displacement_clean.png, tip_fft_all_modes.png")
+
+
+# %%
+import numpy as np
+import matplotlib.pyplot as plt
+
+L, EI, rhoA = 1.0, 1.0, 1.0
+betas = [1.875104068711, 4.694091132974, 7.854757438237]
+
+def phi_mode(x, beta):
+    xi = x / L
+    s = (np.cosh(beta) + np.cos(beta)) / (np.sinh(beta) + np.sin(beta))
+    return (np.cosh(beta*xi) - np.cos(beta*xi) - s*(np.sinh(beta*xi) - np.sin(beta*xi)))
+
+def omega(beta):
+    return (beta**2) * np.sqrt(EI/(rhoA*L**4))
+
+x = np.linspace(0, L, 400)
+
+Phi = []
+W = []
+for b in betas:
+    phi = phi_mode(x, b)
+    phi = phi / phi[-1]
+    Phi.append(phi)
+    W.append(omega(b))
+
+Phi = np.array(Phi)
+W = np.array(W)
+
+a = np.array([0.01, 0.002, 0.0005]) # modal amplitudes
+
+plt.figure(figsize=(8,6))
+for t in [0.0, 2.0, 4.0, 6.0, 8.0]:
+    u = np.sum(a[:,None] * Phi * np.cos(W[:,None]*t), axis=0)
+    plt.plot(x, u, label=f"t = {t:.1f}s")
+
+plt.xlabel("x")
+plt.ylabel("u(x,t)")
+plt.title("Wing Deflection Over Time (Modal Superposition)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("wing_shapes_over_time.png", dpi=200)
+plt.show()
+
+print("Saved: wing_shapes_over_time.png")
+
+
+# %%
+import numpy as np
+import matplotlib.pyplot as plt
+
+# --- settings ---
+L, EI, rhoA = 1.0, 1.0, 1.0
+betas = [1.875104068711, 4.694091132974, 7.854757438237]
+
+def omega(beta):
+    return (beta**2) * np.sqrt(EI/(rhoA*L**4))
+
+# choose a mode to test (mode 1 is cleanest)
+w = omega(betas[0])
+
+Tend = 10.0
+A = 0.01
+
+# "reference" time grid (very fine)
+t_ref = np.linspace(0, Tend, 200000)
+u_ref = A*np.cos(w*t_ref)
+
+# coarse dt values
+dts = np.array([0.20, 0.10, 0.05, 0.025, 0.0125])
+errs = []
+
+for dt in dts:
+    t = np.arange(0, Tend+1e-12, dt)
+    u = A*np.cos(w*t)
+
+    # compare to reference by interpolating coarse -> ref grid
+    u_interp = np.interp(t_ref, t, u)
+    err = np.sqrt(np.mean((u_interp - u_ref)**2))
+    errs.append(err)
+
+errs = np.array(errs)
+
+plt.figure(figsize=(7,5))
+plt.loglog(dts, errs, marker="o", label="RMS error")
+
+# reference slope line (pick p=2 to be "calm"; this is sampling error-ish)
+p = 2
+ref = errs[0]*(dts/dts[0])**p
+plt.loglog(dts, ref, "--", label=rf"$\mathcal{{O}}(\Delta t^{p})$ ref")
+
+plt.gca().invert_xaxis()
+plt.xlabel(r"$\Delta t$")
+plt.ylabel("RMS error in tip signal")
+plt.title("Temporal Convergence (Mode 1 tip motion)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("temporal_resolution_error.png", dpi=200)
+plt.show()
+
+print("Saved: temporal_resolution_error.png")
+
+# %%
+import numpy as np
+import matplotlib.pyplot as plt
+
+L = 1.0
+beta1 = 1.875104068711
+
+def phi_mode(x, beta):
+    xi = x / L
+    s = (np.cosh(beta) + np.cos(beta)) / (np.sinh(beta) + np.sin(beta))
+    return (np.cosh(beta*xi) - np.cos(beta*xi) - s*(np.sinh(beta*xi) - np.sin(beta*xi)))
+
+# fine reference grid
+Nref = 8000
+x_ref = np.linspace(0, L, Nref+1)
+phi_ref = phi_mode(x_ref, beta1)
+phi_ref = phi_ref / phi_ref[-1]
+
+Ns = np.array([50, 100, 200, 400, 800])
+errs = []
+dxs = L/Ns
+
+for N in Ns:
+    x = np.linspace(0, L, N+1)
+    phi = phi_mode(x, beta1)
+    phi = phi / phi[-1]
+
+    # compare on reference grid by interpolating coarse phi to x_ref
+    phi_interp = np.interp(x_ref, x, phi)
+    err = np.sqrt(np.mean((phi_interp - phi_ref)**2))
+    errs.append(err)
+
+errs = np.array(errs)
+
+plt.figure(figsize=(7,5))
+plt.loglog(dxs, errs, marker="o", label="RMS shape error")
+
+# reference slope ~ dx^2
+ref = errs[0]*(dxs/dxs[0])**2
+plt.loglog(dxs, ref, "--", label=r"$\mathcal{O}(\Delta x^2)$ ref")
+
+plt.gca().invert_xaxis()
+plt.xlabel(r"$\Delta x$")
+plt.ylabel("RMS error in Mode 1 shape")
+plt.title("Spatial Convergence (Mode 1 shape)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("spatial_convergence_mode_shape.png", dpi=200)
+plt.show()
+
+print("Saved: spatial_convergence_mode_shape.png")
+
+
+# %%
+import numpy as np
+import matplotlib.pyplot as plt
+
+L = 1.0
+betas = np.array([1.875104068711, 4.694091132974, 7.854757438237])
+
+# base values
+EI0 = 1.0
+rhoA0 = 1.0
+
+# sweep EI multiplier
+EI_mult = np.array([0.5, 1.0, 2.0, 4.0])
+rhoA_mult = np.array([0.5, 1.0, 2.0, 4.0])
+
+def omega(beta, EI, rhoA):
+    return (beta**2)*np.sqrt(EI/(rhoA*L**4))
+
+# plot omega_n vs EI scaling (rhoA fixed)
+plt.figure(figsize=(7,5))
+for n, b in enumerate(betas, start=1):
+    ws = [omega(b, EI0*m, rhoA0) for m in EI_mult]
+    plt.plot(EI_mult, ws, marker="o", label=f"Mode {n}")
+plt.xlabel(r"$EI/EI_0$")
+plt.ylabel(r"$\omega_n$ (rad/s)")
+plt.title("Natural Frequency vs Stiffness Scaling (ρA fixed)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("omega_vs_EI.png", dpi=200)
+plt.show()
+
+# plot omega_n vs rhoA scaling (EI fixed)
+plt.figure(figsize=(7,5))
+for n, b in enumerate(betas, start=1):
+    ws = [omega(b, EI0, rhoA0*m) for m in rhoA_mult]
+    plt.plot(rhoA_mult, ws, marker="o", label=f"Mode {n}")
+plt.xlabel(r"$\rho A/(\rho A)_0$")
+plt.ylabel(r"$\omega_n$ (rad/s)")
+plt.title("Natural Frequency vs Mass Scaling (EI fixed)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("omega_vs_rhoA.png", dpi=200)
+plt.show()
+
+print("Saved: omega_vs_EI.png, omega_vs_rhoA.png")
+
+
+
+
+
